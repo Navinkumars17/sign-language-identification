@@ -1,0 +1,524 @@
+import tensorflow as tf
+from google.protobuf import text_format
+from object_detection import exporter
+from object_detection.protos import pipeline_pb2
+
+slim = tf.contrib.slim
+flags = tf.app.flags
+
+flags.DEFINE_string('input_type', 'image_tensor', 'Type of input node. Can be '
+'one of [`image_tensor`, `encoded_image_string_tensor`, '
+'`tf_example`]')
+flags.DEFINE_string('input_shape', None,
+'If input_type is `image_tensor`, this can explicitly set '
+'the shape of this input tensor to a fixed size. The '
+'dimensions are to be provided as a comma-separated list '
+'of integers. A value of -1 can be used for unknown '
+'dimensions. If not specified, for an `image_tensor, the '
+'default shape will be partially specified as '
+'`[None, None, None, 3]`.')
+flags.DEFINE_string('pipeline_config_path', None,
+'Path to a pipeline_pb2.TrainEvalPipelineConfig config '
+'file.')
+flags.DEFINE_string('trained_checkpoint_prefix', None,
+'Path to trained checkpoint, typically of the form '
+'path/to/model.ckpt')
+flags.DEFINE_string('output_directory', None, 'Path to write outputs.')
+flags.DEFINE_string('config_override', '',
+'pipeline_pb2.TrainEvalPipelineConfig '
+'text proto to override pipeline_config_path.')
+flags.DEFINE_boolean('write_inference_graph', False,
+'If true, writes inference graph to disk.')
+tf.app.flags.mark_flag_as_required('pipeline_config_path')
+tf.app.flags.mark_flag_as_required('trained_checkpoint_prefix')
+tf.app.flags.mark_flag_as_required('output_directory')
+FLAGS = flags.FLAGS
+
+
+def main(_):
+pipeline_config = pipeline_pb2.TrainEvalPipelineConfig()
+with tf.gfile.GFile(FLAGS.pipeline_config_path, 'r') as f:
+text_format.Merge(f.read(), pipeline_config)
+text_format.Merge(FLAGS.config_override, pipeline_config)
+if FLAGS.input_shape:
+input_shape = [
+int(dim) if dim != '-1' else None
+for dim in FLAGS.input_shape.split(',')
+]
+else:
+input_shape = None
+exporter.export_inference_graph(
+FLAGS.input_type, pipeline_config, FLAGS.trained_checkpoint_prefix,
+FLAGS.output_directory, input_shape=input_shape,
+write_inference_graph=FLAGS.write_inference_graph)
+
+
+if __name__ == '__main__':
+tf.app.run()
+import numpy as np
+import os
+import sys
+import tensorflow as tf
+from distutils.version import StrictVersion
+from collections import defaultdict
+from PIL import Image
+from object_detection.utils import ops as utils_ops
+from time import sleep
+import urllib.request
+import six.moves.urllib as urllib
+# This is needed since the notebook is stored in the object_detection folder.
+sys.path.append("..")
+
+
+if StrictVersion(tf.__version__) < StrictVersion('1.9.0'):
+raise ImportError('Please upgrade your TensorFlow installation to v1.9.* or later!')
+
+
+from utils import label_map_util
+from utils import visualization_utils as vis_util
+
+MODEL_NAME = 'inference_graph'
+PATH_TO_FROZEN_GRAPH = MODEL_NAME + '/frozen_inference_graph.pb'
+PATH_TO_LABELS = 'training/labelmap.pbtxt'
+
+detection_graph = tf.Graph()
+with detection_graph.as_default():
+od_graph_def = tf.GraphDef()
+with tf.gfile.GFile(PATH_TO_FROZEN_GRAPH, 'rb') as fid:
+serialized_graph = fid.read()
+od_graph_def.ParseFromString(serialized_graph)
+tf.import_graph_def(od_graph_def, name='')
+
+category_index = label_map_util.create_category_index_from_labelmap(PATH_TO_LABELS, use_display_name=True)
+
+def run_inference_for_single_image(image, graph):
+if 'detection_masks' in tensor_dict:
+# The following processing is only for single image
+detection_boxes = tf.squeeze(tensor_dict['detection_boxes'], [0])
+detection_masks = tf.squeeze(tensor_dict['detection_masks'], [0])
+# Reframe is required to translate mask from box coordinates to image coordinates and fit the image size.
+real_num_detection = tf.cast(tensor_dict['num_detections'][0], tf.int32)
+detection_boxes = tf.slice(detection_boxes, [0, 0], [real_num_detection, -1])
+detection_masks = tf.slice(detection_masks, [0, 0, 0], [real_num_detection, -1, -1])
+detection_masks_reframed = utils_ops.reframe_box_masks_to_image_masks(
+detection_masks, detection_boxes, image.shape[0], image.shape[1])
+detection_masks_reframed = tf.cast(
+tf.greater(detection_masks_reframed, 0.5), tf.uint8)
+# Follow the convention by adding back the batch dimension
+tensor_dict['detection_masks'] = tf.expand_dims(
+detection_masks_reframed, 0)
+image_tensor = tf.get_default_graph().get_tensor_by_name('image_tensor:0')
+
+# Run inference
+output_dict = sess.run(tensor_dict,
+feed_dict={image_tensor: np.expand_dims(image, 0)})
+
+# all outputs are float32 numpy arrays, so convert types as appropriate
+output_dict['num_detections'] = int(output_dict['num_detections'][0])
+output_dict['detection_classes'] = output_dict[
+'detection_classes'][0].astype(np.uint8)
+
+output_dict['detection_boxes'] = output_dict['detection_boxes'][0]
+output_dict['detection_scores'] = output_dict['detection_scores'][0]
+global a2
+if 'detection_masks' in output_dict:
+output_dict['detection_masks'] = output_dict['detection_masks'][0]
+return output_dict
+import serial
+ser = serial.Serial(port = "COM32", baudrate = '9600',timeout=0.5)
+import cv2
+cap = cv2.VideoCapture(0)
+url='http://192.168.1.4:8080/shot.jpg'
+try:
+with detection_graph.as_default():
+with tf.Session() as sess:
+# Get handles to input and output tensors
+ops = tf.get_default_graph().get_operations()
+all_tensor_names = {output.name for op in ops for output in op.outputs}
+tensor_dict = {}
+for key in [
+'num_detections', 'detection_boxes', 'detection_scores',
+'detection_classes', 'detection_masks'
+]:
+tensor_name = key + ':0'
+if tensor_name in all_tensor_names:
+tensor_dict[key] = tf.get_default_graph().get_tensor_by_name(
+tensor_name)
+
+while True:
+imgPath = urllib.request.urlopen(url)
+imgNp = np.array(bytearray(imgPath.read()), dtype=np.uint8)
+image_np = cv2.imdecode(imgNp, -1)
+#(__, image_np) = cap.read()
+# Expand dimensions since the model expects images to have shape: [1, None, None, 3]
+image_np_expanded = np.expand_dims(image_np, axis=0)
+cv2.imwrite('capture.jpg',image_np)
+# Actual detection.
+output_dict = run_inference_for_single_image(image_np, detection_graph)
+# Visualization of the results of a detection.
+if output_dict['detection_classes'][0] == 1 and  output_dict['detection_scores'][0] > 0.60:
+print('Hello')
+ser.write('1'.encode())
+vis_util.visualize_boxes_and_labels_on_image_array(
+image_np,
+output_dict['detection_boxes'],
+output_dict['detection_classes'],
+output_dict['detection_scores'],
+category_index,
+instance_masks=output_dict.get('detection_masks'),
+use_normalized_coordinates=True,
+line_thickness=8)
+ser.write('1'.encode())
+if output_dict['detection_classes'][0] == 2 and  output_dict['detection_scores'][0] > 0.75 :
+print('Love You')
+ser.write('2'.encode())
+vis_util.visualize_boxes_and_labels_on_image_array(
+image_np,
+output_dict['detection_boxes'],
+output_dict['detection_classes'],
+output_dict['detection_scores'],
+category_index,
+instance_masks=output_dict.get('detection_masks'),
+use_normalized_coordinates=True,
+line_thickness=8)
+ser.write('2'.encode())
+if output_dict['detection_classes'][0] == 3 and  output_dict['detection_scores'][0] > 0.40:
+print('No')
+ser.write('3'.encode())
+vis_util.visualize_boxes_and_labels_on_image_array(
+image_np,
+output_dict['detection_boxes'],
+output_dict['detection_classes'],
+output_dict['detection_scores'],
+category_index,
+instance_masks=output_dict.get('detection_masks'),
+use_normalized_coordinates=True,
+line_thickness=8)
+ser.write('3'.encode())
+if output_dict['detection_classes'][0] == 4 and  output_dict['detection_scores'][0] > 0.30 :
+print('Please')
+ser.write('4'.encode())
+vis_util.visualize_boxes_and_labels_on_image_array(
+image_np,
+output_dict['detection_boxes'],
+output_dict['detection_classes'],
+output_dict['detection_scores'],
+category_index,
+instance_masks=output_dict.get('detection_masks'),
+use_normalized_coordinates=True,
+line_thickness=8)
+ser.write('4'.encode())
+if output_dict['detection_classes'][0] == 5 and  output_dict['detection_scores'][0] > 0.60:
+print('ThankYou')
+ser.write('5'.encode())
+vis_util.visualize_boxes_and_labels_on_image_array(
+image_np,
+output_dict['detection_boxes'],
+output_dict['detection_classes'],
+output_dict['detection_scores'],
+category_index,
+instance_masks=output_dict.get('detection_masks'),
+use_normalized_coordinates=True,
+line_thickness=8)
+ser.write('5'.encode())
+if output_dict['detection_classes'][0] == 6 and  output_dict['detection_scores'][0] > 0.30:
+print('Yes')
+ser.write('6'.encode())
+vis_util.visualize_boxes_and_labels_on_image_array(
+image_np,
+output_dict['detection_boxes'],
+output_dict['detection_classes'],
+output_dict['detection_scores'],
+category_index,
+instance_masks=output_dict.get('detection_masks'),
+use_normalized_coordinates=True,
+line_thickness=8)
+ser.write('6'.encode())
+cv2.imshow('object_detection', cv2.resize(image_np,(800,600)))
+if cv2.waitKey(1)& 0xFF == ord('q'):
+cap.release()
+cv2.destroyAllWindows()
+break
+except Exception as e:
+print(e)
+#cap.release()
+"""Binary to run train and evaluation on object detection model."""
+
+from __future__ import absolute_import
+from __future__ import division
+from __future__ import print_function
+
+from absl import flags
+
+import tensorflow as tf
+
+from object_detection import model_hparams
+from object_detection import model_lib
+
+flags.DEFINE_string(
+'model_dir', None, 'Path to output model directory '
+'where event and checkpoint files will be written.')
+flags.DEFINE_string('pipeline_config_path', None, 'Path to pipeline config '
+'file.')
+flags.DEFINE_integer('num_train_steps', None, 'Number of train steps.')
+flags.DEFINE_boolean('eval_training_data', False,
+'If training data should be evaluated for this job. Note '
+'that one call only use this in eval-only mode, and '
+'`checkpoint_dir` must be supplied.')
+flags.DEFINE_integer('sample_1_of_n_eval_examples', 1, 'Will sample one of '
+'every n eval input examples, where n is provided.')
+flags.DEFINE_integer('sample_1_of_n_eval_on_train_examples', 5, 'Will sample '
+'one of every n train input examples for evaluation, '
+'where n is provided. This is only used if '
+'`eval_training_data` is True.')
+flags.DEFINE_string(
+'hparams_overrides', None, 'Hyperparameter overrides, '
+'represented as a string containing comma-separated '
+'hparam_name=value pairs.')
+flags.DEFINE_string(
+'checkpoint_dir', None, 'Path to directory holding a checkpoint.  If '
+'`checkpoint_dir` is provided, this binary operates in eval-only mode, '
+'writing resulting metrics to `model_dir`.')
+flags.DEFINE_boolean(
+'run_once', False, 'If running in eval-only mode, whether to run just '
+'one round of eval vs running continuously (default).'
+)
+FLAGS = flags.FLAGS
+
+
+def main(unused_argv):
+flags.mark_flag_as_required('model_dir')
+flags.mark_flag_as_required('pipeline_config_path')
+config = tf.estimator.RunConfig(model_dir=FLAGS.model_dir)
+
+train_and_eval_dict = model_lib.create_estimator_and_inputs(
+run_config=config,
+hparams=model_hparams.create_hparams(FLAGS.hparams_overrides),
+pipeline_config_path=FLAGS.pipeline_config_path,
+train_steps=FLAGS.num_train_steps,
+sample_1_of_n_eval_examples=FLAGS.sample_1_of_n_eval_examples,
+sample_1_of_n_eval_on_train_examples=(
+FLAGS.sample_1_of_n_eval_on_train_examples))
+estimator = train_and_eval_dict['estimator']
+train_input_fn = train_and_eval_dict['train_input_fn']
+eval_input_fns = train_and_eval_dict['eval_input_fns']
+eval_on_train_input_fn = train_and_eval_dict['eval_on_train_input_fn']
+predict_input_fn = train_and_eval_dict['predict_input_fn']
+train_steps = train_and_eval_dict['train_steps']
+
+if FLAGS.checkpoint_dir:
+if FLAGS.eval_training_data:
+name = 'training_data'
+input_fn = eval_on_train_input_fn
+else:
+name = 'validation_data'
+# The first eval input will be evaluated.
+input_fn = eval_input_fns[0]
+if FLAGS.run_once:
+estimator.evaluate(input_fn,
+num_eval_steps=None,
+checkpoint_path=tf.train.latest_checkpoint(
+FLAGS.checkpoint_dir))
+else:
+model_lib.continuous_eval(estimator, FLAGS.checkpoint_dir, input_fn,
+train_steps, name)
+else:
+train_spec, eval_specs = model_lib.create_train_and_eval_specs(
+train_input_fn,
+eval_input_fns,
+eval_on_train_input_fn,
+predict_input_fn,
+train_steps,
+eval_on_train_data=False)
+
+# Currently only a single Eval Spec is allowed.
+tf.estimator.train_and_evaluate(estimator, train_spec, eval_specs[0])
+
+
+if __name__ == '__main__':
+tf.app.run()
+# Copyright 2017 The TensorFlow Authors. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
+
+r"""Training executable for detection models.
+
+This executable is used to train DetectionModels. There are two ways of
+configuring the training job:
+
+1) A single pipeline_pb2.TrainEvalPipelineConfig configuration file
+can be specified by --pipeline_config_path.
+
+Example usage:
+./train \
+--logtostderr \
+--train_dir=path/to/train_dir \
+--pipeline_config_path=pipeline_config.pbtxt
+
+2) Three configuration files can be provided: a model_pb2.DetectionModel
+configuration file to define what type of DetectionModel is being trained, an
+input_reader_pb2.InputReader file to specify what training data will be used and
+a train_pb2.TrainConfig file to configure training parameters.
+
+Example usage:
+./train \
+--logtostderr \
+--train_dir=path/to/train_dir \
+--model_config_path=model_config.pbtxt \
+--train_config_path=train_config.pbtxt \
+--input_config_path=train_input_config.pbtxt
+"""
+
+import functools
+import json
+import os
+import tensorflow as tf
+
+from object_detection.builders import dataset_builder
+from object_detection.builders import graph_rewriter_builder
+from object_detection.builders import model_builder
+from object_detection.legacy import trainer
+from object_detection.utils import config_util
+
+tf.logging.set_verbosity(tf.logging.INFO)
+
+flags = tf.app.flags
+flags.DEFINE_string('master', '', 'Name of the TensorFlow master to use.')
+flags.DEFINE_integer('task', 0, 'task id')
+flags.DEFINE_integer('num_clones', 1, 'Number of clones to deploy per worker.')
+flags.DEFINE_boolean('clone_on_cpu', False,
+'Force clones to be deployed on CPU.  Note that even if '
+'set to False (allowing ops to run on gpu), some ops may '
+'still be run on the CPU if they have no GPU kernel.')
+flags.DEFINE_integer('worker_replicas', 1, 'Number of worker+trainer '
+'replicas.')
+flags.DEFINE_integer('ps_tasks', 0,
+'Number of parameter server tasks. If None, does not use '
+'a parameter server.')
+flags.DEFINE_string('train_dir', '',
+'Directory to save the checkpoints and training summaries.')
+
+flags.DEFINE_string('pipeline_config_path', '',
+'Path to a pipeline_pb2.TrainEvalPipelineConfig config '
+'file. If provided, other configs are ignored')
+
+flags.DEFINE_string('train_config_path', '',
+'Path to a train_pb2.TrainConfig config file.')
+flags.DEFINE_string('input_config_path', '',
+'Path to an input_reader_pb2.InputReader config file.')
+flags.DEFINE_string('model_config_path', '',
+'Path to a model_pb2.DetectionModel config file.')
+
+FLAGS = flags.FLAGS
+
+
+@tf.contrib.framework.deprecated(None, 'Use object_detection/model_main.py.')
+def main(_):
+assert FLAGS.train_dir, '`train_dir` is missing.'
+if FLAGS.task == 0: tf.gfile.MakeDirs(FLAGS.train_dir)
+if FLAGS.pipeline_config_path:
+configs = config_util.get_configs_from_pipeline_file(
+FLAGS.pipeline_config_path)
+if FLAGS.task == 0:
+tf.gfile.Copy(FLAGS.pipeline_config_path,
+os.path.join(FLAGS.train_dir, 'pipeline.config'),
+overwrite=True)
+else:
+configs = config_util.get_configs_from_multiple_files(
+model_config_path=FLAGS.model_config_path,
+train_config_path=FLAGS.train_config_path,
+train_input_config_path=FLAGS.input_config_path)
+if FLAGS.task == 0:
+for name, config in [('model.config', FLAGS.model_config_path),
+('train.config', FLAGS.train_config_path),
+('input.config', FLAGS.input_config_path)]:
+tf.gfile.Copy(config, os.path.join(FLAGS.train_dir, name),
+overwrite=True)
+
+model_config = configs['model']
+train_config = configs['train_config']
+input_config = configs['train_input_config']
+
+model_fn = functools.partial(
+model_builder.build,
+model_config=model_config,
+is_training=True)
+
+def get_next(config):
+return dataset_builder.make_initializable_iterator(
+dataset_builder.build(config)).get_next()
+
+create_input_dict_fn = functools.partial(get_next, input_config)
+
+env = json.loads(os.environ.get('TF_CONFIG', '{}'))
+cluster_data = env.get('cluster', None)
+cluster = tf.train.ClusterSpec(cluster_data) if cluster_data else None
+task_data = env.get('task', None) or {'type': 'master', 'index': 0}
+task_info = type('TaskSpec', (object,), task_data)
+
+# Parameters for a single worker.
+ps_tasks = 0
+worker_replicas = 1
+worker_job_name = 'lonely_worker'
+task = 0
+is_chief = True
+master = ''
+
+if cluster_data and 'worker' in cluster_data:
+# Number of total worker replicas include "worker"s and the "master".
+worker_replicas = len(cluster_data['worker']) + 1
+if cluster_data and 'ps' in cluster_data:
+ps_tasks = len(cluster_data['ps'])
+
+if worker_replicas > 1 and ps_tasks < 1:
+raise ValueError('At least 1 ps task is needed for distributed training.')
+
+if worker_replicas >= 1 and ps_tasks > 0:
+# Set up distributed training.
+server = tf.train.Server(tf.train.ClusterSpec(cluster), protocol='grpc',
+job_name=task_info.type,
+task_index=task_info.index)
+if task_info.type == 'ps':
+server.join()
+return
+
+worker_job_name = '%s/task:%d' % (task_info.type, task_info.index)
+task = task_info.index
+is_chief = (task_info.type == 'master')
+master = server.target
+
+graph_rewriter_fn = None
+if 'graph_rewriter_config' in configs:
+graph_rewriter_fn = graph_rewriter_builder.build(
+configs['graph_rewriter_config'], is_training=True)
+
+trainer.train(
+create_input_dict_fn,
+model_fn,
+train_config,
+master,
+task,
+FLAGS.num_clones,
+worker_replicas,
+FLAGS.clone_on_cpu,
+ps_tasks,
+worker_job_name,
+is_chief,
+FLAGS.train_dir,
+graph_hook_fn=graph_rewriter_fn)
+
+
+if __name__ == '__main__':
+tf.app.run()
+
